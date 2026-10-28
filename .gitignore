@@ -1,0 +1,14 @@
+# пользовательские данные: аудио, тексты, библиотека
+data/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

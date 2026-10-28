@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Obsidian TTS</title>
+<style>
+  :root { --bg:#0f1115; --card:#1a1d24; --fg:#e6e6e6; --muted:#8b93a1; --acc:#7c9cff; --err:#ff7c7c; --line:#333; }
+  @media (prefers-color-scheme: light) { :root { --bg:#f5f6f8; --card:#fff; --fg:#1a1a1a; --muted:#666; --line:#ddd; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  main { max-width:720px; margin:0 auto; padding:16px; }
+  h1 { font-size:22px; margin:8px 0 16px; }
+  .card { background:var(--card); border-radius:12px; padding:14px; margin-bottom:12px; }
+  label { display:block; font-size:13px; color:var(--muted); margin:8px 0 4px; }
+  select, input[type=number] { width:100%; padding:10px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--fg); font-size:16px; }
+  .row { display:flex; gap:10px; }
+  .row > * { flex:1; }
+  input[type=file] { width:100%; padding:10px 0; }
+  button { padding:10px 16px; border-radius:8px; border:0; background:var(--acc); color:#000; font-weight:600; font-size:15px; cursor:pointer; }
+  button:disabled { opacity:.5; }
+  button.ghost { background:transparent; color:var(--muted); border:1px solid var(--line); font-weight:400; padding:6px 10px; font-size:13px; }
+  button.ghost:hover { color:var(--fg); }
+  .item h3 { margin:0 0 4px; font-size:16px; word-break:break-word; }
+  .meta { font-size:12px; color:var(--muted); margin-bottom:8px; }
+  audio { width:100%; margin:6px 0; }
+  .actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:6px; }
+  .actions a { color:var(--muted); font-size:13px; text-decoration:none; border:1px solid var(--line); padding:6px 10px; border-radius:8px; }
+  .st-queued, .st-processing { color:var(--acc); }
+  .st-error { color:var(--err); }
+  .hint { font-size:13px; color:var(--muted); }
+  code { background:var(--bg); padding:2px 5px; border-radius:4px; font-size:13px; word-break:break-all; }
+  #status { font-size:13px; color:var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>🎧 Obsidian → mp3</h1>
+
+  <div class="card">
+    <form id="f">
+      <label>Заметки (.md, можно несколько, или .zip с папкой / хранилищем)</label>
+      <input type="file" name="files" multiple accept=".md,.markdown,.txt,.zip" required>
+      <div class="row">
+        <div>
+          <label>Голос</label>
+          <select name="voice">{{VOICE_OPTIONS}}</select>
+        </div>
+        <div>
+          <label>Скорость, % (−50…+100)</label>
+          <input type="number" name="rate" value="0" min="-50" max="100" step="5">
+        </div>
+      </div>
+      <label><input type="checkbox" name="say_title" value="true" checked> Проговаривать название заметки в начале</label>
+      <div style="margin-top:12px; display:flex; gap:10px; align-items:center">
+        <button type="submit" id="btn">Озвучить</button>
+        <span id="status"></span>
+      </div>
+    </form>
+  </div>
+
+  <div class="card hint">
+    📱 С телефона в той же Wi-Fi открой этот же адрес. Или подпишись в подкаст-приложении (AntennaPod, Apple Podcasts → «добавить по URL»):
+    <code id="feed"></code>
+  </div>
+
+  <div id="list"></div>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+$('#feed').textContent = location.origin + '/feed.xml';
+
+const STATUS = { queued:'в очереди…', processing:'озвучивается…', done:'', error:'ошибка' };
+let timer = null;
+
+async function load() {
+  clearTimeout(timer);
+  const items = await (await fetch('/api/items')).json();
+  const list = $('#list');
+  if (!items.length) { list.innerHTML = '<div class="card hint">Пока пусто. Загрузи заметки.</div>'; return; }
+  list.innerHTML = items.map(it => `
+    <div class="card item">
+      <h3>${esc(it.title)}</h3>
+      <div class="meta">${esc(it.source)} · ${(it.voice_used || it.voice).replace('Neural','')} · ${it.rate} · ${it.chars} симв. · ${new Date(it.created).toLocaleString('ru')}
+        <span class="st-${it.status}">${STATUS[it.status] ?? ''}</span>
+        ${it.error ? `<div class="st-error">${esc(it.error)}</div>` : ''}
+        ${it.note ? `<div>⚠ ${esc(it.note)}</div>` : ''}
+      </div>
+      ${it.status === 'done' ? `<audio controls preload="none" src="/audio/${it.id}.mp3"></audio>` : ''}
+      <div class="actions">
+        ${it.status === 'done' ? `<a href="/download/${it.id}">⬇ скачать mp3</a>` : ''}
+        <a href="/text/${it.id}" target="_blank">📄 текст</a>
+        ${it.status === 'error' ? `<button class="ghost" onclick="retry('${it.id}')">↻ повторить</button>` : ''}
+        <button class="ghost" onclick="del('${it.id}')">🗑 удалить</button>
+      </div>
+    </div>`).join('');
+  const busy = items.some(i => i.status === 'queued' || i.status === 'processing');
+  if (busy) timer = setTimeout(load, 2000);
+}
+function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+async function del(id){ if (!confirm('Удалить?')) return; await fetch('/api/items/'+id, {method:'DELETE'}); load(); }
+async function retry(id){ await fetch('/api/retry/'+id, {method:'POST'}); load(); }
+
+$('#f').addEventListener('submit', async e => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  if (!fd.has('say_title')) fd.set('say_title', 'false');
+  $('#btn').disabled = true; $('#status').textContent = 'загружаю…';
+  try {
+    const r = await (await fetch('/api/upload', {method:'POST', body: fd})).json();
+    $('#status').textContent = `добавлено: ${r.created}`;
+    e.target.querySelector('input[type=file]').value = '';
+  } catch (err) { $('#status').textContent = 'ошибка: ' + err; }
+  $('#btn').disabled = false;
+  load();
+});
+load();
+</script>
+</body>
+</html>
